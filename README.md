@@ -1,4 +1,4 @@
-# SkyBlock Mining Coach — Claude custom connector
+# SkyBlock Mining Coach 
 
 A tiny remote MCP server that gives Claude live access to your Hypixel SkyBlock data.
 It runs where there's real internet, so it does the three things the browser/sandbox
