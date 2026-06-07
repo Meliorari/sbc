@@ -286,7 +286,49 @@ function makeServer() {
 // ============================================================== HTTP LAYER ====
 const app = express();
 app.use(express.json({ limit: "6mb" }));
+app.use(express.urlencoded({ extended: true }));
+app.use((req, res, next) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Headers", "*");
+  res.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
+});
 app.get("/", (_q, r) => r.send("SBC — SkyBlock Coach MCP server is running. POST /mcp"));
+
+// ---- OAuth shim ------------------------------------------------------------
+// Claude's custom-connector flow performs OAuth discovery + Dynamic Client
+// Registration even for public servers (anthropics/claude-ai-mcp #402); if those
+// endpoints 404 it fails to connect instead of falling back to anonymous. This is
+// an OPEN shim: it satisfies the handshake and issues a token to anyone. There's
+// nothing to protect (public game data; the Hypixel key stays server-side and is
+// read-only) — but note the endpoint is therefore effectively public.
+const base = req => (process.env.RENDER_EXTERNAL_URL || `${req.headers["x-forwarded-proto"] || "https"}://${req.headers.host}`).replace(/\/$/, "");
+const rnd = () => Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+const asMeta = b => ({ issuer: b, authorization_endpoint: `${b}/authorize`, token_endpoint: `${b}/token`, registration_endpoint: `${b}/register`, response_types_supported: ["code"], grant_types_supported: ["authorization_code"], code_challenge_methods_supported: ["S256", "plain"], token_endpoint_auth_methods_supported: ["none"] });
+const prMeta = b => ({ resource: `${b}/mcp`, authorization_servers: [b] });
+
+for (const p of ["/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/mcp", "/.well-known/openid-configuration"])
+  app.get(p, (req, res) => res.json(asMeta(base(req))));
+for (const p of ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"])
+  app.get(p, (req, res) => res.json(prMeta(base(req))));
+
+app.post("/register", (req, res) => res.status(201).json({
+  client_id: "sbc-public-client", client_id_issued_at: Math.floor(Date.now() / 1000),
+  redirect_uris: req.body?.redirect_uris || [], token_endpoint_auth_method: "none",
+  grant_types: ["authorization_code"], response_types: ["code"],
+}));
+app.get("/authorize", (req, res) => {
+  const { redirect_uri, state } = req.query;
+  if (!redirect_uri) return res.status(400).send("missing redirect_uri");
+  const u = new URL(String(redirect_uri));
+  u.searchParams.set("code", rnd());
+  if (state) u.searchParams.set("state", String(state));
+  res.redirect(u.toString());
+});
+app.post("/token", (_req, res) => res.json({ access_token: rnd(), token_type: "bearer", expires_in: 3600, scope: "mcp" }));
+// ---------------------------------------------------------------------------
+
 app.post("/mcp", async (req, res) => {
   const server = makeServer();
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
